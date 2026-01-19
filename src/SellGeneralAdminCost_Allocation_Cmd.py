@@ -2665,30 +2665,40 @@ def build_step0008_rows_from_step0007_path(pszStep0007Path: str) -> None:
     if len(objRows) < 2:
         return
 
-    objHeaderRow: List[str] = objRows[1]
-    objTargetIndices: List[int] = [
-        iIndex for iIndex, pszValue in enumerate(objHeaderRow) if pszValue == "粗利益率"
-    ]
-    if not objTargetIndices:
+    pszStep0008Path: str = pszStep0007Path.replace("step0007_", "step0008_", 1)
+    write_tsv_rows(pszStep0008Path, [list(objRow) for objRow in objRows])
+
+
+def build_step0009_rows_from_step0008_path(pszStep0008Path: str) -> None:
+    if not os.path.isfile(pszStep0008Path):
         return
 
-    objOutputRows: List[List[str]] = []
-    for iRowIndex, objRow in enumerate(objRows):
-        if iRowIndex < 2:
-            objOutputRows.append(list(objRow))
-            continue
-        objNewRow = list(objRow)
-        for iColumnIndex in objTargetIndices:
-            if iColumnIndex >= len(objNewRow):
-                continue
-            if objNewRow[iColumnIndex] == "'+∞":
-                objNewRow[iColumnIndex] = "＋∞"
-            elif objNewRow[iColumnIndex] == "'－∞":
-                objNewRow[iColumnIndex] = "－∞"
-        objOutputRows.append(objNewRow)
+    objRows = read_tsv_rows(pszStep0008Path)
+    if not objRows:
+        return
 
-    pszStep0008Path: str = pszStep0007Path.replace("step0007_", "step0008_", 1)
-    write_tsv_rows(pszStep0008Path, objOutputRows)
+    objHeaderRow: List[str] = [
+        "－",
+        "－",
+        "PJコード",
+        "単月",
+        "累計",
+        "単月",
+        "累計",
+        "単月",
+        "累計",
+        "単月",
+        "累計",
+        "単月",
+        "累計",
+        "単月",
+        "累計",
+    ]
+    objOutputRows: List[List[str]] = [objHeaderRow]
+    objOutputRows.extend([list(objRow) for objRow in objRows[1:]])
+
+    pszStep0009Path: str = pszStep0008Path.replace("step0008_", "step0009_", 1)
+    write_tsv_rows(pszStep0009Path, objOutputRows)
 
 
 def filter_rows_by_names(
@@ -4274,6 +4284,8 @@ def create_pj_summary(
         build_step0007_rows_from_step0006_path(pszStep0006Path)
         pszStep0007Path: str = pszStep0006Path.replace("step0006_", "step0007_", 1)
         build_step0008_rows_from_step0007_path(pszStep0007Path)
+        pszStep0008Path: str = pszStep0007Path.replace("step0007_", "step0008_", 1)
+        build_step0009_rows_from_step0008_path(pszStep0008Path)
 
     objGrossProfitColumns: List[str] = ["科目名", "売上総利益", "純売上高"]
     objGrossProfitSingleRows: List[List[str]] = filter_rows_by_columns(
@@ -4601,6 +4613,7 @@ def create_cumulative_reports(pszPlPath: str) -> None:
     try_create_cp_step0009_vertical(pszDirectory)
     try_create_cp_group_step0009_vertical(pszDirectory)
     create_pj_summary_gross_profit_ranking_excel(pszDirectory)
+    create_pj_summary_sales_cost_sg_admin_margin_excel(pszDirectory)
 
 
 def copy_cp_step0005_vertical_files(pszDirectory: str, objPaths: List[Optional[str]]) -> None:
@@ -4754,6 +4767,62 @@ def create_pj_summary_gross_profit_ranking_excel(pszDirectory: str) -> Optional[
     pszOutputPath: str = os.path.join(
         pszTargetDirectory,
         "PJサマリ_単月・累計_粗利金額ランキング.xlsx",
+    )
+    objWorkbook.save(pszOutputPath)
+    return pszOutputPath
+
+
+def create_pj_summary_sales_cost_sg_admin_margin_excel(pszDirectory: str) -> Optional[str]:
+    objCandidates: List[str] = []
+    objPattern = re.compile(r"^0001_PJサマリ_step0009_.*_単月・累計_損益計算書\.tsv$")
+    for pszName in os.listdir(pszDirectory):
+        if objPattern.match(pszName):
+            objCandidates.append(pszName)
+    if not objCandidates:
+        return None
+    objCandidates.sort()
+    pszTemplatePath: str = os.path.join(
+        os.path.dirname(__file__),
+        "TEMPLATE_PJサマリ_単月・累計_損益計算書・製造原価報告書・工数.xlsx",
+    )
+    if not os.path.isfile(pszTemplatePath):
+        return None
+    objWorkbook = load_workbook(pszTemplatePath)
+    objBaseSheet = objWorkbook.worksheets[0]
+    objSheetNamePattern = re.compile(
+        r"^0001_PJサマリ_step0009_(.+?)_単月・累計_損益計算書\.tsv$",
+    )
+    objUsedSheetNames: set[str] = set()
+    for pszInputName in objCandidates:
+        objSheet = objWorkbook.copy_worksheet(objBaseSheet)
+        objMatch = objSheetNamePattern.match(pszInputName)
+        pszSheetName = objMatch.group(1) if objMatch else os.path.splitext(pszInputName)[0]
+        pszSheetName = pszSheetName[:31] if pszSheetName else "Sheet"
+        pszCandidateName = pszSheetName
+        iSuffix = 1
+        while pszCandidateName in objUsedSheetNames:
+            iSuffix += 1
+            pszCandidateName = f"{pszSheetName[:28]}_{iSuffix}"
+        objSheet.title = pszCandidateName
+        objUsedSheetNames.add(pszCandidateName)
+        objRows = read_tsv_rows(os.path.join(pszDirectory, pszInputName))
+        for iRowIndex, objRow in enumerate(objRows, start=1):
+            for iColumnIndex, pszValue in enumerate(objRow, start=1):
+                objCellValue = parse_tsv_value_for_excel(pszValue)
+                objSheet.cell(
+                    row=iRowIndex,
+                    column=iColumnIndex,
+                    value=objCellValue,
+                )
+    objWorkbook.remove(objBaseSheet)
+    pszTargetDirectory: str = os.path.join(
+        pszDirectory,
+        "PJサマリ",
+    )
+    os.makedirs(pszTargetDirectory, exist_ok=True)
+    pszOutputPath: str = os.path.join(
+        pszTargetDirectory,
+        "PJサマリ_PJ別_売上・売上原価・販管費・利益率.xlsx",
     )
     objWorkbook.save(pszOutputPath)
     return pszOutputPath
